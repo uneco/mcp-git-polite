@@ -264,10 +264,11 @@ def calculate_diff_size(hunks: list[HunkRaw]) -> int:
             total_bytes += len(ln.encode('utf-8'))
     return total_bytes
 
-def flat_file_lines_with_numbers(hunks: list[HunkRaw]) -> list[str]:
+def flat_file_lines_with_numbers(hunks: list[HunkRaw], include_trailing_newline: bool = True) -> list[str]:
     out: list[str] = []
     n = 1  # Sequential number of changed lines (within file)
     first = True
+    last_hunk = None
     for h in sorted(hunks, key=lambda x: (x.old_start, x.new_start)):
         if not first:
             out.append("        ...")
@@ -280,6 +281,16 @@ def flat_file_lines_with_numbers(hunks: list[HunkRaw]) -> list[str]:
                 n += 1
             elif sign == " ":
                 out.append("        " + text)
+        last_hunk = h
+
+    # If the new file has a trailing newline and last line was an addition,
+    # show an empty line that represents the trailing newline
+    if include_trailing_newline and last_hunk and not last_hunk.new_missing_final_newline:
+        # Check if the last change was an addition (file has content)
+        has_additions = any(ln and ln[0] == '+' for ln in last_hunk.all_lines)
+        if has_additions:
+            out.append(f"{n:04d}: + ")
+
     return out
 
 def current_file_lines(path: str, unified: int = UNIFIED_APPLY) -> dict[str, Any]:
@@ -291,7 +302,7 @@ def current_file_lines(path: str, unified: int = UNIFIED_APPLY) -> dict[str, Any
     return {
         "path": path,
         "binary": binflag,
-        "lines": [] if binflag else flat_file_lines_with_numbers(hunks)
+        "lines": [] if binflag else flat_file_lines_with_numbers(hunks, include_trailing_newline=True)
     }
 
 # ---------- list (flat output per file) ----------
@@ -412,27 +423,61 @@ def list_files(paths: list[str], page_token: str | None, page_size_files: int, p
 
 # ---------- apply (partial application for 1 file, by number/range) ----------
 
-def determine_new_trailing_newline(hunks: list[HunkRaw], default: bool) -> bool:
+def count_hunk_changes(hunks: list[HunkRaw]) -> int:
+    """Count the total number of changed lines (additions and deletions) in hunks.
+
+    Args:
+        hunks: List of diff hunks
+
+    Returns:
+        Total count of lines that have line numbers (excluding context lines)
+    """
+    count = 0
+    for hunk in hunks:
+        for ln in hunk.all_lines:
+            if ln and ln[0] in '+-':
+                count += 1
+    return count
+
+def determine_new_trailing_newline(hunks: list[HunkRaw], want_numbers: set[int], default: bool) -> bool:
     """Determine if the new file should have a trailing newline.
 
     Args:
         hunks: List of diff hunks
+        want_numbers: Set of line numbers that were selected for application
         default: Default value if no explicit newline information in hunks
 
     Returns:
         True if new file should have trailing newline, False otherwise
     """
+    # Count actual changed lines in hunks
+    actual_change_count = count_hunk_changes(hunks)
+
+    # Check if user selected a line number beyond actual changes
+    # This indicates they selected the trailing newline line
+    max_selected = max(want_numbers) if want_numbers else 0
+    trailing_newline_selected = max_selected > actual_change_count
+
     # Check if any hunk explicitly indicates the new file's trailing newline status
     for hunk in hunks:
-        # If new version explicitly lacks trailing newline, return False
+        # If new version explicitly lacks trailing newline
         if hunk.new_missing_final_newline:
-            return False
+            # User can override by selecting the trailing newline line
+            return trailing_newline_selected
         # If old version lacked trailing newline but new doesn't have the marker,
         # it means trailing newline was added
         if hunk.old_missing_final_newline and not hunk.new_missing_final_newline:
+            # If trailing newline line wasn't selected, don't add it
+            if not trailing_newline_selected:
+                return False
             return True
 
-    # No explicit information about trailing newline changes, use default
+    # No explicit information about trailing newline changes
+    # If user selected trailing newline line, add it
+    if trailing_newline_selected:
+        return True
+
+    # Otherwise use default (from old file)
     return default
 
 def apply_one_file(path: str, want_numbers: list[int]) -> dict:
@@ -496,8 +541,8 @@ def apply_one_file(path: str, want_numbers: list[int]) -> dict:
 
     mode = detect_mode_for_path(path)
     new_text = "\n".join(new_lines)
-    # Determine if new file should have trailing newline based on diff info
-    new_has_trailing_nl = determine_new_trailing_newline(hunks, had_trailing_nl)
+    # Determine if new file should have trailing newline based on diff info and selected lines
+    new_has_trailing_nl = determine_new_trailing_newline(hunks, want_set, had_trailing_nl)
     if new_has_trailing_nl:
         new_text += "\n"
     update_index_with_content(path, mode, new_text)

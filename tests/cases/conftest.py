@@ -21,6 +21,10 @@ def pytest_configure(config):
         "markers",
         "multiple_commits: Tests that run in the 'multiple_commits' scenario (003)"
     )
+    config.addinivalue_line(
+        "markers",
+        "newline_eof: Tests that run in the 'newline_eof' scenario (004)"
+    )
 
 
 @pytest.fixture(autouse=True)

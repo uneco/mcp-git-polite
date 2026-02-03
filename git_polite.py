@@ -78,6 +78,8 @@ class HunkRaw:
     old_lines: int
     new_start: int
     new_lines: int
+    old_missing_final_newline: bool = False  # True if old file lacks trailing newline
+    new_missing_final_newline: bool = False  # True if new file lacks trailing newline
 
 HUNK_RE = re.compile(r'^@@ -(\d+),?(\d*) \+(\d+),?(\d*) @@')
 
@@ -153,6 +155,14 @@ def parse_unified_diff(diff_text: str) -> tuple[dict[str, list[HunkRaw]], dict[s
 
         if cur_hunk is not None and raw:
             if raw.startswith("\\ No newline at end of file"):
+                # Track which side is missing the final newline
+                # The marker appears after the line that's missing the newline
+                if cur_hunk.all_lines:
+                    last_line = cur_hunk.all_lines[-1]
+                    if last_line[0] == '-':
+                        cur_hunk.old_missing_final_newline = True
+                    elif last_line[0] == '+':
+                        cur_hunk.new_missing_final_newline = True
                 continue
             if raw[0] in " +-":
                 cur_hunk.all_lines.append(raw)
@@ -402,6 +412,29 @@ def list_files(paths: list[str], page_token: str | None, page_size_files: int, p
 
 # ---------- apply (partial application for 1 file, by number/range) ----------
 
+def determine_new_trailing_newline(hunks: list[HunkRaw], default: bool) -> bool:
+    """Determine if the new file should have a trailing newline.
+
+    Args:
+        hunks: List of diff hunks
+        default: Default value if no explicit newline information in hunks
+
+    Returns:
+        True if new file should have trailing newline, False otherwise
+    """
+    # Check if any hunk explicitly indicates the new file's trailing newline status
+    for hunk in hunks:
+        # If new version explicitly lacks trailing newline, return False
+        if hunk.new_missing_final_newline:
+            return False
+        # If old version lacked trailing newline but new doesn't have the marker,
+        # it means trailing newline was added
+        if hunk.old_missing_final_newline and not hunk.new_missing_final_newline:
+            return True
+
+    # No explicit information about trailing newline changes, use default
+    return default
+
 def apply_one_file(path: str, want_numbers: list[int]) -> dict:
     """Apply selected line changes to a single file and stage to git index.
 
@@ -463,7 +496,9 @@ def apply_one_file(path: str, want_numbers: list[int]) -> dict:
 
     mode = detect_mode_for_path(path)
     new_text = "\n".join(new_lines)
-    if had_trailing_nl:
+    # Determine if new file should have trailing newline based on diff info
+    new_has_trailing_nl = determine_new_trailing_newline(hunks, had_trailing_nl)
+    if new_has_trailing_nl:
         new_text += "\n"
     update_index_with_content(path, mode, new_text)
 

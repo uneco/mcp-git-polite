@@ -1220,8 +1220,8 @@ def create_mcp_server(structured_output: bool = False):
         page_token: Annotated[str | None, Field(description="Opaque pagination token from previous response")] = None,
         page_size_files: Annotated[int, Field(description="Max files per page - safety limit", default=PAGE_SIZE_FILES_DEFAULT)] = PAGE_SIZE_FILES_DEFAULT,
         page_size_bytes: Annotated[int, Field(description="Max bytes per page - primary limit", default=PAGE_SIZE_BYTES_DEFAULT)] = PAGE_SIZE_BYTES_DEFAULT,
-        unified: Annotated[int, Field(description="Context lines around changes", default=UNIFIED_LIST_DEFAULT)] = UNIFIED_LIST_DEFAULT
-    ) -> dict:
+        unified: Annotated[int, Field(description="Context lines around changes", default=UNIFIED_LIST_DEFAULT)] = UNIFIED_LIST_DEFAULT,
+    ):
         """View unstaged git changes with line-level selection numbers for partial staging.
 
         PREFER THIS OVER `git diff` when you need to selectively stage changes. Unlike `git diff`,
@@ -1252,7 +1252,10 @@ def create_mcp_server(structured_output: bool = False):
 
         After viewing changes, use apply_changes with the line numbers to stage selected changes.
         """
-        return list_files(paths, page_token, page_size_files, page_size_bytes, unified)
+        result = list_files(paths, page_token, page_size_files, page_size_bytes, unified)
+        if structured_output:
+            return result
+        return format_list_text(result)
 
     @mcp.tool(annotations=ToolAnnotations(
         readOnlyHint=True,
@@ -1260,8 +1263,8 @@ def create_mcp_server(structured_output: bool = False):
     ))
     def diff(
         path: Annotated[str, Field(description="File path to view diff for")],
-        unified: Annotated[int, Field(description="Context lines around changes", default=UNIFIED_LIST_DEFAULT)] = UNIFIED_LIST_DEFAULT
-    ) -> dict:
+        unified: Annotated[int, Field(description="Context lines around changes", default=UNIFIED_LIST_DEFAULT)] = UNIFIED_LIST_DEFAULT,
+    ):
         """View complete diff for a single file without truncation.
 
         This tool is designed for viewing the full diff of a single file, regardless of size.
@@ -1279,11 +1282,14 @@ def create_mcp_server(structured_output: bool = False):
 
         # Check if file has changes
         if path not in files_hunks:
-            return {
+            no_changes = {
                 "path": path,
                 "error": "No changes found for this file",
                 "size_bytes": 0
             }
+            if structured_output:
+                return no_changes
+            return format_diff_text(no_changes)
 
         hunks = files_hunks[path]
         binflag = binaries.get(path, False)
@@ -1316,7 +1322,9 @@ def create_mcp_server(structured_output: bool = False):
                 "size_bytes": lines_bytes
             }
 
-        return result
+        if structured_output:
+            return result
+        return format_diff_text(result)
 
     @mcp.tool(annotations=ToolAnnotations(
         readOnlyHint=False,
@@ -1325,8 +1333,8 @@ def create_mcp_server(structured_output: bool = False):
     ))
     def apply_changes(
         path: Annotated[str, Field(description="File path to apply changes to")],
-        numbers: Annotated[str, Field(description="Change numbers in format: NNNN,MMMM,PPPP-QQQQ")]
-    ) -> dict:
+        numbers: Annotated[str, Field(description="Change numbers in format: NNNN,MMMM,PPPP-QQQQ")],
+    ):
         """Stage selected lines to git index for partial commits (alternative to `git add -p`).
 
         After using list_changes to view numbered changes, use this tool to selectively stage
@@ -1347,15 +1355,21 @@ def create_mcp_server(structured_output: bool = False):
         try:
             nums = parse_number_tokens(numbers)
         except ValueError as e:
-            return {"error": str(e)}
+            error_result = {"error": str(e)}
+            if structured_output:
+                return error_result
+            return format_apply_text(error_result)
 
-        return apply_one_file(path, nums)
+        result = apply_one_file(path, nums)
+        if structured_output:
+            return result
+        return format_apply_text(result)
 
     @mcp.tool(annotations=ToolAnnotations(
         readOnlyHint=True,
         openWorldHint=True
     ))
-    def auto_commit() -> dict:
+    def auto_commit():
         """Start a guided session to organize and commit all unstaged changes with appropriate granularity.
 
         This tool helps you organize your changes and create multiple focused commits by:
@@ -1456,7 +1470,9 @@ def create_mcp_server(structured_output: bool = False):
             )
         }
 
-        return instruction
+        if structured_output:
+            return instruction
+        return format_auto_commit_text(instruction)
 
     @mcp.prompt(name="auto-commit", description="Organize and commit changes using git-polite tools.")
     def auto_commit_command() -> str:
@@ -1472,8 +1488,8 @@ def create_mcp_server(structured_output: bool = False):
     ))
     def unstack(
         branches: Annotated[dict[str, list[str]], Field(description="Dictionary mapping branch names to lists of commit references. Commits can be specified as SHA, branch names, or symbolic refs (e.g., HEAD~2). Commits are cherry-picked in the order specified.")],
-        parent: Annotated[str, Field(description="Base commit to branch from. All branches will start from this commit.")] = "origin/main"
-    ) -> dict:
+        parent: Annotated[str, Field(description="Base commit to branch from. All branches will start from this commit.")] = "origin/main",
+    ):
         """Unstack linear commits into parallel branches for separate PRs.
 
         This tool transforms a linear commit history (A -> B -> C -> D) into parallel
@@ -1499,7 +1515,10 @@ def create_mcp_server(structured_output: bool = False):
             - The current branch is not changed by this operation
             - Uses low-level git commands (commit-tree, update-ref) to avoid changing working directory
         """
-        return do_unstack(branches, parent)
+        result = do_unstack(branches, parent)
+        if structured_output:
+            return result
+        return format_unstack_text(result)
 
     return mcp
 
@@ -1532,7 +1551,7 @@ def main():
         return
 
     if args.cmd == "mcp":
-        mcp = create_mcp_server()
+        mcp = create_mcp_server(structured_output=args.structured_output)
         mcp.run()
         return
 

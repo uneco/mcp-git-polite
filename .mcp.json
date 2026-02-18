@@ -7,6 +7,15 @@
         "git_polite.py",
         "mcp"
       ]
+    },
+    "git-polite-nightly-structured": {
+      "command": "uv",
+      "args": [
+        "run",
+        "git_polite.py",
+        "mcp",
+        "--structured-output"
+      ]
     }
   }
 }

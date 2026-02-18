@@ -726,6 +726,184 @@ def format_pretty(result: dict) -> str:
 
     return "\n".join(lines)
 
+def format_list_text(result: dict) -> str:
+    """Format list_files result as plain text for LLM consumption (no ANSI colors)."""
+    lines: list[str] = []
+
+    for file_info in result.get("files", []):
+        path = file_info.get("path", "")
+        status = file_info.get("status", "modified")
+        binary = file_info.get("binary", False)
+        truncated = file_info.get("truncated", False)
+
+        label = f"──── {path} ({status}) "
+        lines.append(label + "─" * max(0, 52 - len(label)))
+
+        if binary:
+            lines.append("  (binary file)")
+            lines.append("")
+            continue
+
+        if truncated:
+            reason = file_info.get("reason", "diff too large")
+            lines.append(f"  (truncated: {reason})")
+            lines.append("")
+            continue
+
+        for line in file_info.get("lines", []):
+            lines.append(line)
+
+        lines.append("")
+
+    stats = result.get("stats", {})
+    files_count = stats.get("files", 0)
+    total_lines = stats.get("lines", 0)
+    truncated_count = stats.get("truncated_files", 0)
+    page_bytes = stats.get("page_bytes", 0)
+    parts = [f"{files_count} file(s)", f"{total_lines} change(s)"]
+    if page_bytes > 0:
+        parts.append(f"{page_bytes} bytes")
+    summary = ", ".join(parts)
+    if truncated_count > 0:
+        summary += f" ({truncated_count} truncated)"
+    lines.append(summary)
+
+    if result.get("page_token_next"):
+        lines.append(f"page_token_next: {result['page_token_next']}")
+
+    return "\n".join(lines)
+
+
+def format_diff_text(result: dict) -> str:
+    """Format diff result as plain text for LLM consumption."""
+    if "error" in result:
+        return f"Error: {result['error']}"
+
+    lines: list[str] = []
+    path = result.get("path", "")
+    status = result.get("status", "modified")
+    binary = result.get("binary", False)
+
+    label = f"──── {path} ({status}) "
+    lines.append(label + "─" * max(0, 52 - len(label)))
+
+    if binary:
+        lines.append("  (binary file)")
+    else:
+        for line in result.get("lines", []):
+            lines.append(line)
+
+    size_bytes = result.get("size_bytes", 0)
+    lines.append("")
+    lines.append(f"{size_bytes} bytes")
+
+    return "\n".join(lines)
+
+
+def format_apply_text(result: dict) -> str:
+    """Format apply_one_file result as plain text for LLM consumption."""
+    if "error" in result:
+        return f"Error: {result['error']}"
+
+    lines: list[str] = []
+
+    for applied in result.get("applied", []):
+        file_path = applied.get("file", "")
+        applied_count = applied.get("applied_count", 0)
+        after_applying = applied.get("after_applying", {})
+        unstaged = after_applying.get("unstaged_lines", 0)
+
+        lines.append(f"Applied {applied_count} change(s) to {file_path}")
+        if unstaged > 0:
+            lines.append(f"{unstaged} unstaged change(s) remaining")
+
+        file_lines = after_applying.get("diff", [])
+        if file_lines:
+            lines.append("")
+            lines.append(f"Remaining changes in {file_path}:")
+            for line in file_lines:
+                lines.append(line)
+
+    for skipped in result.get("skipped", []):
+        file_path = skipped.get("file", "")
+        number = skipped.get("number", "")
+        reason = skipped.get("reason", "unknown")
+        lines.append(f"Skipped {file_path} #{number}: {reason}")
+
+    stats = result.get("stats", {})
+    applied_count = stats.get("changes_applied", 0)
+    skipped_count = stats.get("changes_skipped", 0)
+    lines.append("")
+    lines.append(f"{applied_count} applied, {skipped_count} skipped")
+
+    return "\n".join(lines)
+
+
+def format_auto_commit_text(result: dict) -> str:
+    """Format auto_commit result as Markdown for LLM consumption."""
+    lines: list[str] = []
+
+    recent = result.get("recent_commits", [])
+    if recent:
+        lines.append("# Recent commits")
+        lines.append("")
+        for msg in recent:
+            lines.append(f"- {msg}")
+        lines.append("")
+
+    summary = result.get("summary", {})
+    total_files = summary.get("total_files", 0)
+    total_add = summary.get("total_additions", 0)
+    total_del = summary.get("total_deletions", 0)
+    lines.append("# Changes")
+    lines.append("")
+    lines.append(f"{total_files} file(s) changed, {total_add} addition(s), {total_del} deletion(s)")
+    lines.append("")
+
+    for f in result.get("files", []):
+        path = f.get("path", "")
+        status = f.get("status", "modified")
+        if f.get("binary"):
+            lines.append(f"- `{path}` ({status}) binary")
+        else:
+            add = f.get("additions", 0)
+            delete = f.get("deletions", 0)
+            lines.append(f"- `{path}` ({status}) +{add} -{delete}")
+    lines.append("")
+
+    next_steps = result.get("next", "")
+    if next_steps:
+        lines.append("# Next steps")
+        lines.append("")
+        lines.append(next_steps)
+
+    return "\n".join(lines)
+
+
+def format_unstack_text(result: dict) -> str:
+    """Format unstack result as plain text for LLM consumption."""
+    lines: list[str] = []
+
+    for branch in result.get("created_branches", []):
+        name = branch.get("name", "")
+        commits = branch.get("commits_applied", [])
+        head = branch.get("head_sha", "")[:7]
+        lines.append(f"Created {name} ({len(commits)} commit(s), head: {head})")
+
+    for err in result.get("errors", []):
+        branch = err.get("branch", "?")
+        error = err.get("error", "unknown")
+        lines.append(f"Error [{branch}]: {error}")
+
+    stats = result.get("stats", {})
+    total = stats.get("total_branches", 0)
+    success = stats.get("successful_branches", 0)
+    lines.append("")
+    lines.append(f"{success}/{total} branches created")
+
+    return "\n".join(lines)
+
+
 def format_apply_pretty(result: dict) -> str:
     """Format apply_one_file result as colored plain text.
 

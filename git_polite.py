@@ -15,7 +15,7 @@ import re
 import stat
 import subprocess
 import sys
-from typing import Any
+from typing import Annotated, Any
 
 UNIFIED_LIST_DEFAULT = 20 # Default context width for list
 UNIFIED_APPLY = 3 # Context width for apply (fixed)
@@ -1025,6 +1025,7 @@ def create_mcp_server():
     try:
         from fastmcp import FastMCP
         from mcp.types import ToolAnnotations
+        from pydantic import Field
     except ImportError:
         print("Error: fastmcp package not found. Install with: pip install fastmcp", file=sys.stderr)
         sys.exit(1)
@@ -1036,12 +1037,12 @@ def create_mcp_server():
         openWorldHint=True
     ))
     def list_changes(
-        paths: list[str] = [],
-        page_token: str | None = None,
-        page_size_files: int = PAGE_SIZE_FILES_DEFAULT,
-        page_size_bytes: int = PAGE_SIZE_BYTES_DEFAULT,
-        unified: int = UNIFIED_LIST_DEFAULT
-    ) -> str:
+        paths: Annotated[list[str], Field(description="Optional list of file paths to filter (default: all files)")] = [],
+        page_token: Annotated[str | None, Field(description="Opaque pagination token from previous response")] = None,
+        page_size_files: Annotated[int, Field(description="Max files per page - safety limit", default=PAGE_SIZE_FILES_DEFAULT)] = PAGE_SIZE_FILES_DEFAULT,
+        page_size_bytes: Annotated[int, Field(description="Max bytes per page - primary limit", default=PAGE_SIZE_BYTES_DEFAULT)] = PAGE_SIZE_BYTES_DEFAULT,
+        unified: Annotated[int, Field(description="Context lines around changes", default=UNIFIED_LIST_DEFAULT)] = UNIFIED_LIST_DEFAULT
+    ) -> dict:
         """View unstaged git changes with line-level selection numbers for partial staging.
 
         PREFER THIS OVER `git diff` when you need to selectively stage changes. Unlike `git diff`,
@@ -1071,25 +1072,17 @@ def create_mcp_server():
         - Selectively staging parts of newly created files
 
         After viewing changes, use apply_changes with the line numbers to stage selected changes.
-
-        Args:
-            paths: Optional list of file paths to filter (default: all files)
-            page_token: Opaque pagination token from previous response
-            page_size_files: Max files per page - safety limit (default: PAGE_SIZE_FILES_DEFAULT)
-            page_size_bytes: Max bytes per page - primary limit (default: PAGE_SIZE_BYTES_DEFAULT)
-            unified: Context lines around changes (default: UNIFIED_LIST_DEFAULT)
-
-        Returns:
-            JSON string with format: {page_token_next, files: [{path, binary, lines}], stats}
         """
-        result = list_files(paths, page_token, page_size_files, page_size_bytes, unified)
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return list_files(paths, page_token, page_size_files, page_size_bytes, unified)
 
     @mcp.tool(annotations=ToolAnnotations(
         readOnlyHint=True,
         openWorldHint=True
     ))
-    def diff(path: str, unified: int = UNIFIED_LIST_DEFAULT) -> str:
+    def diff(
+        path: Annotated[str, Field(description="File path to view diff for")],
+        unified: Annotated[int, Field(description="Context lines around changes", default=UNIFIED_LIST_DEFAULT)] = UNIFIED_LIST_DEFAULT
+    ) -> dict:
         """View complete diff for a single file without truncation.
 
         This tool is designed for viewing the full diff of a single file, regardless of size.
@@ -1100,13 +1093,6 @@ def create_mcp_server():
         - View the complete diff of a large file (e.g., uv.lock, package-lock.json)
         - Review all changes in a specific file before staging
         - Analyze files that would be truncated by list_changes
-
-        Args:
-            path: File path to view diff for (required)
-            unified: Context lines around changes (default: UNIFIED_LIST_DEFAULT)
-
-        Returns:
-            JSON string with format: {path, binary, status, lines, size_bytes}
         """
         # Get diff for single file only
         diff_text, untracked_set, deleted_set = get_diff_with_untracked([path], unified)
@@ -1114,11 +1100,11 @@ def create_mcp_server():
 
         # Check if file has changes
         if path not in files_hunks:
-            return json.dumps({
+            return {
                 "path": path,
                 "error": "No changes found for this file",
                 "size_bytes": 0
-            }, ensure_ascii=False, indent=2)
+            }
 
         hunks = files_hunks[path]
         binflag = binaries.get(path, False)
@@ -1151,14 +1137,17 @@ def create_mcp_server():
                 "size_bytes": lines_bytes
             }
 
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return result
 
     @mcp.tool(annotations=ToolAnnotations(
         readOnlyHint=False,
         destructiveHint=True,
         openWorldHint=True
     ))
-    def apply_changes(path: str, numbers: str) -> str:
+    def apply_changes(
+        path: Annotated[str, Field(description="File path to apply changes to")],
+        numbers: Annotated[str, Field(description="Change numbers in format: NNNN,MMMM,PPPP-QQQQ")]
+    ) -> dict:
         """Stage selected lines to git index for partial commits (alternative to `git add -p`).
 
         After using list_changes to view numbered changes, use this tool to selectively stage
@@ -1175,27 +1164,19 @@ def create_mcp_server():
 
         The tool updates the git index directly and reports remaining unstaged changes, allowing
         iterative staging for multiple commits from the same file.
-
-        Args:
-            path: File path to apply changes to
-            numbers: Change numbers in format: NNNN,MMMM,PPPP-QQQQ
-
-        Returns:
-            JSON string with format: {applied: [{file, applied_count, after_applying: {diff, unstaged_lines}}], skipped, stats}
         """
         try:
             nums = parse_number_tokens(numbers)
         except ValueError as e:
-            return json.dumps({"error": str(e)}, ensure_ascii=False)
+            return {"error": str(e)}
 
-        result = apply_one_file(path, nums)
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return apply_one_file(path, nums)
 
     @mcp.tool(annotations=ToolAnnotations(
         readOnlyHint=True,
         openWorldHint=True
     ))
-    def auto_commit() -> str:
+    def auto_commit() -> dict:
         """Start a guided session to organize and commit all unstaged changes with appropriate granularity.
 
         This tool helps you organize your changes and create multiple focused commits by:
@@ -1208,9 +1189,6 @@ def create_mcp_server():
 
         Use this when you have multiple logical changes mixed together and want to organize them
         into separate, well-structured commits.
-
-        Returns:
-            JSON with recent commits, file statistics, and next steps for the agent
         """
         # Get recent non-merge commits (last 5)
         try:
@@ -1299,7 +1277,7 @@ def create_mcp_server():
             )
         }
 
-        return json.dumps(instruction, ensure_ascii=False, indent=2)
+        return instruction
 
     @mcp.prompt(name="auto-commit", description="Organize and commit changes using git-polite tools.")
     def auto_commit_command() -> str:
@@ -1313,7 +1291,10 @@ def create_mcp_server():
         destructiveHint=True,
         openWorldHint=True
     ))
-    def unstack(branches: dict[str, list[str]], parent: str = "origin/main") -> str:
+    def unstack(
+        branches: Annotated[dict[str, list[str]], Field(description="Dictionary mapping branch names to lists of commit references. Commits can be specified as SHA, branch names, or symbolic refs (e.g., HEAD~2). Commits are cherry-picked in the order specified.")],
+        parent: Annotated[str, Field(description="Base commit to branch from. All branches will start from this commit.")] = "origin/main"
+    ) -> dict:
         """Unstack linear commits into parallel branches for separate PRs.
 
         This tool transforms a linear commit history (A -> B -> C -> D) into parallel
@@ -1334,27 +1315,12 @@ def create_mcp_server():
         - feat/999 with fix-bug and update-docs cherry-picked in order
         - feat/1000 with add-feature cherry-picked
 
-        Args:
-            branches: Dictionary mapping branch names to lists of commit references.
-                     Commits can be specified as SHA, branch names, or symbolic refs (e.g., HEAD~2).
-                     Commits are cherry-picked in the order specified.
-            parent: Base commit to branch from (default: "origin/main").
-                   All branches will start from this commit.
-
-        Returns:
-            JSON string with format: {
-                created_branches: [{name, commits_applied, head_sha}],
-                errors: [{branch, commit, error}],
-                stats: {total_branches, successful_branches, failed_branches}
-            }
-
         Note:
             - Existing branches with the same name will cause an error
             - The current branch is not changed by this operation
             - Uses low-level git commands (commit-tree, update-ref) to avoid changing working directory
         """
-        result = do_unstack(branches, parent)
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        return do_unstack(branches, parent)
 
     return mcp
 

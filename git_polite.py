@@ -15,7 +15,7 @@ import re
 import stat
 import subprocess
 import sys
-from typing import Any
+from typing import Annotated, Any
 
 UNIFIED_LIST_DEFAULT = 20 # Default context width for list
 UNIFIED_APPLY = 3 # Context width for apply (fixed)
@@ -726,6 +726,184 @@ def format_pretty(result: dict) -> str:
 
     return "\n".join(lines)
 
+def format_list_text(result: dict) -> str:
+    """Format list_files result as plain text for LLM consumption (no ANSI colors)."""
+    lines: list[str] = []
+
+    for file_info in result.get("files", []):
+        path = file_info.get("path", "")
+        status = file_info.get("status", "modified")
+        binary = file_info.get("binary", False)
+        truncated = file_info.get("truncated", False)
+
+        label = f"──── {path} ({status}) "
+        lines.append(label + "─" * max(0, 52 - len(label)))
+
+        if binary:
+            lines.append("  (binary file)")
+            lines.append("")
+            continue
+
+        if truncated:
+            reason = file_info.get("reason", "diff too large")
+            lines.append(f"  (truncated: {reason})")
+            lines.append("")
+            continue
+
+        for line in file_info.get("lines", []):
+            lines.append(line)
+
+        lines.append("")
+
+    stats = result.get("stats", {})
+    files_count = stats.get("files", 0)
+    total_lines = stats.get("lines", 0)
+    truncated_count = stats.get("truncated_files", 0)
+    page_bytes = stats.get("page_bytes", 0)
+    parts = [f"{files_count} file(s)", f"{total_lines} change(s)"]
+    if page_bytes > 0:
+        parts.append(f"{page_bytes} bytes")
+    summary = ", ".join(parts)
+    if truncated_count > 0:
+        summary += f" ({truncated_count} truncated)"
+    lines.append(summary)
+
+    if result.get("page_token_next"):
+        lines.append(f"page_token_next: {result['page_token_next']}")
+
+    return "\n".join(lines)
+
+
+def format_diff_text(result: dict) -> str:
+    """Format diff result as plain text for LLM consumption."""
+    if "error" in result:
+        return f"Error: {result['error']}"
+
+    lines: list[str] = []
+    path = result.get("path", "")
+    status = result.get("status", "modified")
+    binary = result.get("binary", False)
+
+    label = f"──── {path} ({status}) "
+    lines.append(label + "─" * max(0, 52 - len(label)))
+
+    if binary:
+        lines.append("  (binary file)")
+    else:
+        for line in result.get("lines", []):
+            lines.append(line)
+
+    size_bytes = result.get("size_bytes", 0)
+    lines.append("")
+    lines.append(f"{size_bytes} bytes")
+
+    return "\n".join(lines)
+
+
+def format_apply_text(result: dict) -> str:
+    """Format apply_one_file result as plain text for LLM consumption."""
+    if "error" in result:
+        return f"Error: {result['error']}"
+
+    lines: list[str] = []
+
+    for applied in result.get("applied", []):
+        file_path = applied.get("file", "")
+        applied_count = applied.get("applied_count", 0)
+        after_applying = applied.get("after_applying", {})
+        unstaged = after_applying.get("unstaged_lines", 0)
+
+        lines.append(f"Applied {applied_count} change(s) to {file_path}")
+        if unstaged > 0:
+            lines.append(f"{unstaged} unstaged change(s) remaining")
+
+        file_lines = after_applying.get("diff", [])
+        if file_lines:
+            lines.append("")
+            lines.append(f"Remaining changes in {file_path}:")
+            for line in file_lines:
+                lines.append(line)
+
+    for skipped in result.get("skipped", []):
+        file_path = skipped.get("file", "")
+        number = skipped.get("number", "")
+        reason = skipped.get("reason", "unknown")
+        lines.append(f"Skipped {file_path} #{number}: {reason}")
+
+    stats = result.get("stats", {})
+    applied_count = stats.get("changes_applied", 0)
+    skipped_count = stats.get("changes_skipped", 0)
+    lines.append("")
+    lines.append(f"{applied_count} applied, {skipped_count} skipped")
+
+    return "\n".join(lines)
+
+
+def format_auto_commit_text(result: dict) -> str:
+    """Format auto_commit result as Markdown for LLM consumption."""
+    lines: list[str] = []
+
+    recent = result.get("recent_commits", [])
+    if recent:
+        lines.append("# Recent commits")
+        lines.append("")
+        for msg in recent:
+            lines.append(f"- {msg}")
+        lines.append("")
+
+    summary = result.get("summary", {})
+    total_files = summary.get("total_files", 0)
+    total_add = summary.get("total_additions", 0)
+    total_del = summary.get("total_deletions", 0)
+    lines.append("# Changes")
+    lines.append("")
+    lines.append(f"{total_files} file(s) changed, {total_add} addition(s), {total_del} deletion(s)")
+    lines.append("")
+
+    for f in result.get("files", []):
+        path = f.get("path", "")
+        status = f.get("status", "modified")
+        if f.get("binary"):
+            lines.append(f"- `{path}` ({status}) binary")
+        else:
+            add = f.get("additions", 0)
+            delete = f.get("deletions", 0)
+            lines.append(f"- `{path}` ({status}) +{add} -{delete}")
+    lines.append("")
+
+    next_steps = result.get("next", "")
+    if next_steps:
+        lines.append("# Next steps")
+        lines.append("")
+        lines.append(next_steps)
+
+    return "\n".join(lines)
+
+
+def format_unstack_text(result: dict) -> str:
+    """Format unstack result as plain text for LLM consumption."""
+    lines: list[str] = []
+
+    for branch in result.get("created_branches", []):
+        name = branch.get("name", "")
+        commits = branch.get("commits_applied", [])
+        head = branch.get("head_sha", "")[:7]
+        lines.append(f"Created {name} ({len(commits)} commit(s), head: {head})")
+
+    for err in result.get("errors", []):
+        branch = err.get("branch", "?")
+        error = err.get("error", "unknown")
+        lines.append(f"Error [{branch}]: {error}")
+
+    stats = result.get("stats", {})
+    total = stats.get("total_branches", 0)
+    success = stats.get("successful_branches", 0)
+    lines.append("")
+    lines.append(f"{success}/{total} branches created")
+
+    return "\n".join(lines)
+
+
 def format_apply_pretty(result: dict) -> str:
     """Format apply_one_file result as colored plain text.
 
@@ -791,7 +969,7 @@ def format_apply_pretty(result: dict) -> str:
 # ---------- CLI ----------
 
 def parse_args():
-    p = argparse.ArgumentParser(prog="git-polite", description="Git line-level staging")
+    p = argparse.ArgumentParser(prog="git-polite", description="Git line-level staging", allow_abbrev=False)
     sub = p.add_subparsers(dest="cmd", required=True)
 
     list_parser = sub.add_parser("list", help="List file diffs as flat 'lines' with context")
@@ -807,7 +985,8 @@ def parse_args():
     a.add_argument("numbers", help="NNNN,MMMM,PPPP-QQQQ format change numbers to apply")
     a.add_argument("--format", choices=["json", "pretty"], default="json", help="Output format (default: json)")
 
-    sub.add_parser("mcp", help="Run as MCP server (stdio)")
+    mcp_parser = sub.add_parser("mcp", help="Run as MCP server (stdio)", allow_abbrev=False)
+    mcp_parser.add_argument("--structured-output", action="store_true", default=False, help="Return structured JSON output instead of plain text")
 
     return p.parse_args()
 
@@ -1020,11 +1199,12 @@ def do_unstack(branches: dict[str, list[str]], parent: str = "origin/main") -> d
 
 # ---------- MCP Server ----------
 
-def create_mcp_server():
+def create_mcp_server(structured_output: bool = False):
     """Create and configure MCP server with FastMCP."""
     try:
         from fastmcp import FastMCP
         from mcp.types import ToolAnnotations
+        from pydantic import Field
     except ImportError:
         print("Error: fastmcp package not found. Install with: pip install fastmcp", file=sys.stderr)
         sys.exit(1)
@@ -1036,12 +1216,12 @@ def create_mcp_server():
         openWorldHint=True
     ))
     def list_changes(
-        paths: list[str] = [],
-        page_token: str | None = None,
-        page_size_files: int = PAGE_SIZE_FILES_DEFAULT,
-        page_size_bytes: int = PAGE_SIZE_BYTES_DEFAULT,
-        unified: int = UNIFIED_LIST_DEFAULT
-    ) -> str:
+        paths: Annotated[list[str], Field(description="Optional list of file paths to filter (default: all files)")] = [],
+        page_token: Annotated[str | None, Field(description="Opaque pagination token from previous response")] = None,
+        page_size_files: Annotated[int, Field(description="Max files per page - safety limit", default=PAGE_SIZE_FILES_DEFAULT)] = PAGE_SIZE_FILES_DEFAULT,
+        page_size_bytes: Annotated[int, Field(description="Max bytes per page - primary limit", default=PAGE_SIZE_BYTES_DEFAULT)] = PAGE_SIZE_BYTES_DEFAULT,
+        unified: Annotated[int, Field(description="Context lines around changes", default=UNIFIED_LIST_DEFAULT)] = UNIFIED_LIST_DEFAULT,
+    ):
         """View unstaged git changes with line-level selection numbers for partial staging.
 
         PREFER THIS OVER `git diff` when you need to selectively stage changes. Unlike `git diff`,
@@ -1071,25 +1251,20 @@ def create_mcp_server():
         - Selectively staging parts of newly created files
 
         After viewing changes, use apply_changes with the line numbers to stage selected changes.
-
-        Args:
-            paths: Optional list of file paths to filter (default: all files)
-            page_token: Opaque pagination token from previous response
-            page_size_files: Max files per page - safety limit (default: PAGE_SIZE_FILES_DEFAULT)
-            page_size_bytes: Max bytes per page - primary limit (default: PAGE_SIZE_BYTES_DEFAULT)
-            unified: Context lines around changes (default: UNIFIED_LIST_DEFAULT)
-
-        Returns:
-            JSON string with format: {page_token_next, files: [{path, binary, lines}], stats}
         """
         result = list_files(paths, page_token, page_size_files, page_size_bytes, unified)
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        if structured_output:
+            return result
+        return format_list_text(result)
 
     @mcp.tool(annotations=ToolAnnotations(
         readOnlyHint=True,
         openWorldHint=True
     ))
-    def diff(path: str, unified: int = UNIFIED_LIST_DEFAULT) -> str:
+    def diff(
+        path: Annotated[str, Field(description="File path to view diff for")],
+        unified: Annotated[int, Field(description="Context lines around changes", default=UNIFIED_LIST_DEFAULT)] = UNIFIED_LIST_DEFAULT,
+    ):
         """View complete diff for a single file without truncation.
 
         This tool is designed for viewing the full diff of a single file, regardless of size.
@@ -1100,13 +1275,6 @@ def create_mcp_server():
         - View the complete diff of a large file (e.g., uv.lock, package-lock.json)
         - Review all changes in a specific file before staging
         - Analyze files that would be truncated by list_changes
-
-        Args:
-            path: File path to view diff for (required)
-            unified: Context lines around changes (default: UNIFIED_LIST_DEFAULT)
-
-        Returns:
-            JSON string with format: {path, binary, status, lines, size_bytes}
         """
         # Get diff for single file only
         diff_text, untracked_set, deleted_set = get_diff_with_untracked([path], unified)
@@ -1114,11 +1282,14 @@ def create_mcp_server():
 
         # Check if file has changes
         if path not in files_hunks:
-            return json.dumps({
+            no_changes = {
                 "path": path,
                 "error": "No changes found for this file",
                 "size_bytes": 0
-            }, ensure_ascii=False, indent=2)
+            }
+            if structured_output:
+                return no_changes
+            return format_diff_text(no_changes)
 
         hunks = files_hunks[path]
         binflag = binaries.get(path, False)
@@ -1151,14 +1322,19 @@ def create_mcp_server():
                 "size_bytes": lines_bytes
             }
 
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        if structured_output:
+            return result
+        return format_diff_text(result)
 
     @mcp.tool(annotations=ToolAnnotations(
         readOnlyHint=False,
         destructiveHint=True,
         openWorldHint=True
     ))
-    def apply_changes(path: str, numbers: str) -> str:
+    def apply_changes(
+        path: Annotated[str, Field(description="File path to apply changes to")],
+        numbers: Annotated[str, Field(description="Change numbers in format: NNNN,MMMM,PPPP-QQQQ")],
+    ):
         """Stage selected lines to git index for partial commits (alternative to `git add -p`).
 
         After using list_changes to view numbered changes, use this tool to selectively stage
@@ -1175,27 +1351,25 @@ def create_mcp_server():
 
         The tool updates the git index directly and reports remaining unstaged changes, allowing
         iterative staging for multiple commits from the same file.
-
-        Args:
-            path: File path to apply changes to
-            numbers: Change numbers in format: NNNN,MMMM,PPPP-QQQQ
-
-        Returns:
-            JSON string with format: {applied: [{file, applied_count, after_applying: {diff, unstaged_lines}}], skipped, stats}
         """
         try:
             nums = parse_number_tokens(numbers)
         except ValueError as e:
-            return json.dumps({"error": str(e)}, ensure_ascii=False)
+            error_result = {"error": str(e)}
+            if structured_output:
+                return error_result
+            return format_apply_text(error_result)
 
         result = apply_one_file(path, nums)
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        if structured_output:
+            return result
+        return format_apply_text(result)
 
     @mcp.tool(annotations=ToolAnnotations(
         readOnlyHint=True,
         openWorldHint=True
     ))
-    def auto_commit() -> str:
+    def auto_commit():
         """Start a guided session to organize and commit all unstaged changes with appropriate granularity.
 
         This tool helps you organize your changes and create multiple focused commits by:
@@ -1208,9 +1382,6 @@ def create_mcp_server():
 
         Use this when you have multiple logical changes mixed together and want to organize them
         into separate, well-structured commits.
-
-        Returns:
-            JSON with recent commits, file statistics, and next steps for the agent
         """
         # Get recent non-merge commits (last 5)
         try:
@@ -1299,7 +1470,9 @@ def create_mcp_server():
             )
         }
 
-        return json.dumps(instruction, ensure_ascii=False, indent=2)
+        if structured_output:
+            return instruction
+        return format_auto_commit_text(instruction)
 
     @mcp.prompt(name="auto-commit", description="Organize and commit changes using git-polite tools.")
     def auto_commit_command() -> str:
@@ -1313,7 +1486,10 @@ def create_mcp_server():
         destructiveHint=True,
         openWorldHint=True
     ))
-    def unstack(branches: dict[str, list[str]], parent: str = "origin/main") -> str:
+    def unstack(
+        branches: Annotated[dict[str, list[str]], Field(description="Dictionary mapping branch names to lists of commit references. Commits can be specified as SHA, branch names, or symbolic refs (e.g., HEAD~2). Commits are cherry-picked in the order specified.")],
+        parent: Annotated[str, Field(description="Base commit to branch from. All branches will start from this commit.")] = "origin/main",
+    ):
         """Unstack linear commits into parallel branches for separate PRs.
 
         This tool transforms a linear commit history (A -> B -> C -> D) into parallel
@@ -1334,27 +1510,15 @@ def create_mcp_server():
         - feat/999 with fix-bug and update-docs cherry-picked in order
         - feat/1000 with add-feature cherry-picked
 
-        Args:
-            branches: Dictionary mapping branch names to lists of commit references.
-                     Commits can be specified as SHA, branch names, or symbolic refs (e.g., HEAD~2).
-                     Commits are cherry-picked in the order specified.
-            parent: Base commit to branch from (default: "origin/main").
-                   All branches will start from this commit.
-
-        Returns:
-            JSON string with format: {
-                created_branches: [{name, commits_applied, head_sha}],
-                errors: [{branch, commit, error}],
-                stats: {total_branches, successful_branches, failed_branches}
-            }
-
         Note:
             - Existing branches with the same name will cause an error
             - The current branch is not changed by this operation
             - Uses low-level git commands (commit-tree, update-ref) to avoid changing working directory
         """
         result = do_unstack(branches, parent)
-        return json.dumps(result, ensure_ascii=False, indent=2)
+        if structured_output:
+            return result
+        return format_unstack_text(result)
 
     return mcp
 
@@ -1387,7 +1551,7 @@ def main():
         return
 
     if args.cmd == "mcp":
-        mcp = create_mcp_server()
+        mcp = create_mcp_server(structured_output=args.structured_output)
         mcp.run()
         return
 

@@ -969,7 +969,7 @@ def format_apply_pretty(result: dict) -> str:
 # ---------- CLI ----------
 
 def parse_args():
-    p = argparse.ArgumentParser(prog="git-polite", description="Git line-level staging")
+    p = argparse.ArgumentParser(prog="git-polite", description="Git line-level staging", allow_abbrev=False)
     sub = p.add_subparsers(dest="cmd", required=True)
 
     list_parser = sub.add_parser("list", help="List file diffs as flat 'lines' with context")
@@ -985,7 +985,8 @@ def parse_args():
     a.add_argument("numbers", help="NNNN,MMMM,PPPP-QQQQ format change numbers to apply")
     a.add_argument("--format", choices=["json", "pretty"], default="json", help="Output format (default: json)")
 
-    sub.add_parser("mcp", help="Run as MCP server (stdio)")
+    mcp_parser = sub.add_parser("mcp", help="Run as MCP server (stdio)", allow_abbrev=False)
+    mcp_parser.add_argument("--structured-output", action="store_true", default=False, help="Return structured JSON output instead of plain text")
 
     return p.parse_args()
 
@@ -1198,7 +1199,7 @@ def do_unstack(branches: dict[str, list[str]], parent: str = "origin/main") -> d
 
 # ---------- MCP Server ----------
 
-def create_mcp_server():
+def create_mcp_server(structured_output: bool = False):
     """Create and configure MCP server with FastMCP."""
     try:
         from fastmcp import FastMCP

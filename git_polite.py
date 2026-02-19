@@ -726,6 +726,51 @@ def format_pretty(result: dict) -> str:
 
     return "\n".join(lines)
 
+def _format_file_box(path: str, status: str, diff_lines: list[str], *, note: str = "") -> list[str]:
+    """Format a single file's diff as a box with drawing characters.
+
+    Args:
+        path: File path
+        status: File status (modified, added, deleted)
+        diff_lines: Numbered diff lines from flat_file_lines_with_numbers
+        note: Optional note to display instead of diff lines (e.g. "binary file", truncation reason)
+
+    Returns:
+        List of formatted lines with box-drawing characters.
+    """
+    out: list[str] = []
+    out.append(f"┌──── {path} ({status})")
+
+    if note:
+        out.append(f"│ ({note})")
+        out.append("└────")
+        return out
+
+    # Collect change numbers for the footer summary
+    change_numbers: list[int] = []
+    for line in diff_lines:
+        out.append(f"│ {line}")
+        # Extract change number from lines like "0005: + ..."
+        if line and line[0].isdigit():
+            num_str = line.split(":")[0].strip()
+            try:
+                change_numbers.append(int(num_str))
+            except ValueError:
+                pass
+
+    # Footer with line number range
+    if change_numbers:
+        first, last = change_numbers[0], change_numbers[-1]
+        if first == last:
+            out.append(f"└──── all lines: {first:04d}")
+        else:
+            out.append(f"└──── all lines: {first:04d}-{last:04d}")
+    else:
+        out.append("└────")
+
+    return out
+
+
 def format_list_text(result: dict) -> str:
     """Format list_files result as plain text for LLM consumption (no ANSI colors)."""
     lines: list[str] = []
@@ -736,23 +781,18 @@ def format_list_text(result: dict) -> str:
         binary = file_info.get("binary", False)
         truncated = file_info.get("truncated", False)
 
-        label = f"──── {path} ({status}) "
-        lines.append(label + "─" * max(0, 52 - len(label)))
-
         if binary:
-            lines.append("  (binary file)")
+            lines.extend(_format_file_box(path, status, [], note="binary file"))
             lines.append("")
             continue
 
         if truncated:
             reason = file_info.get("reason", "diff too large")
-            lines.append(f"  (truncated: {reason})")
+            lines.extend(_format_file_box(path, status, [], note=f"truncated: {reason}"))
             lines.append("")
             continue
 
-        for line in file_info.get("lines", []):
-            lines.append(line)
-
+        lines.extend(_format_file_box(path, status, file_info.get("lines", [])))
         lines.append("")
 
     stats = result.get("stats", {})
@@ -784,14 +824,10 @@ def format_diff_text(result: dict) -> str:
     status = result.get("status", "modified")
     binary = result.get("binary", False)
 
-    label = f"──── {path} ({status}) "
-    lines.append(label + "─" * max(0, 52 - len(label)))
-
     if binary:
-        lines.append("  (binary file)")
+        lines.extend(_format_file_box(path, status, [], note="binary file"))
     else:
-        for line in result.get("lines", []):
-            lines.append(line)
+        lines.extend(_format_file_box(path, status, result.get("lines", [])))
 
     size_bytes = result.get("size_bytes", 0)
     lines.append("")
@@ -820,9 +856,7 @@ def format_apply_text(result: dict) -> str:
         file_lines = after_applying.get("diff", [])
         if file_lines:
             lines.append("")
-            lines.append(f"Remaining changes in {file_path}:")
-            for line in file_lines:
-                lines.append(line)
+            lines.extend(_format_file_box(file_path, "remaining", file_lines))
 
     for skipped in result.get("skipped", []):
         file_path = skipped.get("file", "")

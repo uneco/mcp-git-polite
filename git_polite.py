@@ -1586,7 +1586,7 @@ def main():
 
     if args.cmd == "mcp":
         mcp = create_mcp_server(structured_output=args.structured_output)
-        mcp.run()
+        mcp.run(show_banner=False)
         return
 
 if __name__ == "__main__":

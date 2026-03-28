@@ -61,7 +61,7 @@ The server exposes four tools:
 3. **apply_changes**: Apply selected changes to git index by number (supports partial staging of untracked files)
    - Parameters:
      - `path`: File path to apply changes to
-     - `numbers`: Change numbers (format: `NNNN,MMMM,PPPP-QQQQ`)
+     - `lines`: Change numbers (format: `NNNN,MMMM,PPPP-QQQQ`)
 
 4. **auto_commit**: Start autopilot mode to organize all changes into focused commits
    - Shows recent commit messages for style reference
@@ -257,7 +257,7 @@ result = list_changes()
 full_diff = diff(path="src/api_client.py")
 
 # Step 4: Selectively stage related changes (e.g., bug fixes separate from refactoring)
-apply_changes(path="src/api_client.py", numbers="0001-0050,0120-0135")
+apply_changes(path="src/api_client.py", lines="0001-0050,0120-0135")
 ```
 
 ### Pagination Example

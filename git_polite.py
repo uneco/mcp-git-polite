@@ -1016,7 +1016,7 @@ def parse_args():
 
     a = sub.add_parser("apply", help="Apply selected change numbers for a single file")
     a.add_argument("path", help="Target file path")
-    a.add_argument("numbers", help="NNNN,MMMM,PPPP-QQQQ format change numbers to apply")
+    a.add_argument("lines", help="NNNN,MMMM,PPPP-QQQQ format change numbers to apply")
     a.add_argument("--format", choices=["json", "pretty"], default="json", help="Output format (default: json)")
 
     mcp_parser = sub.add_parser("mcp", help="Run as MCP server (stdio)", allow_abbrev=False)
@@ -1367,7 +1367,7 @@ def create_mcp_server(structured_output: bool = False):
     ))
     def apply_changes(
         path: Annotated[str, Field(description="File path to apply changes to")],
-        numbers: Annotated[str, Field(description="Change numbers in format: NNNN,MMMM,PPPP-QQQQ")],
+        lines: Annotated[str, Field(description="Change numbers in format: NNNN,MMMM,PPPP-QQQQ")],
     ):
         """Stage selected lines to git index for partial commits (alternative to `git add -p`).
 
@@ -1387,7 +1387,7 @@ def create_mcp_server(structured_output: bool = False):
         iterative staging for multiple commits from the same file.
         """
         try:
-            nums = parse_number_tokens(numbers)
+            nums = parse_number_tokens(lines)
         except ValueError as e:
             error_result = {"error": str(e)}
             if structured_output:
@@ -1569,7 +1569,7 @@ def main():
 
     if args.cmd == "apply":
         try:
-            numbers = parse_number_tokens(args.numbers)
+            numbers = parse_number_tokens(args.lines)
         except ValueError as e:
             if args.format == "pretty":
                 print(f"{ANSI_RED}Error: {e}{ANSI_RESET}", file=sys.stderr)

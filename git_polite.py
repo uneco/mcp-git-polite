@@ -873,6 +873,37 @@ def format_apply_text(result: dict) -> str:
     return "\n".join(lines)
 
 
+def _schema_type_label(prop: dict) -> str:
+    """Extract a readable type label from a JSON Schema property definition."""
+    types: list[str] = []
+    _collect_schema_types(prop, types)
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    unique = [t for t in types if t not in seen and not seen.add(t)]  # type: ignore[func-returns-value]
+    return " | ".join(unique) if unique else "any"
+
+
+def _collect_schema_types(prop: dict, out: list[str]) -> None:
+    """Recursively collect atomic type names from a JSON Schema definition."""
+    if "type" in prop:
+        out.append(str(prop["type"]))
+    elif "anyOf" in prop:
+        for variant in prop["anyOf"]:
+            _collect_schema_types(variant, out)
+
+
+def _schema_description(prop: dict) -> str:
+    """Extract description from a JSON Schema property, handling nested anyOf."""
+    if "description" in prop:
+        return prop["description"]
+    if "anyOf" in prop:
+        for variant in prop["anyOf"]:
+            desc = _schema_description(variant)
+            if desc:
+                return desc
+    return ""
+
+
 def format_auto_commit_text(result: dict) -> str:
     """Format auto_commit result as Markdown for LLM consumption."""
     lines: list[str] = []
@@ -904,6 +935,31 @@ def format_auto_commit_text(result: dict) -> str:
             delete = f.get("deletions", 0)
             lines.append(f"- `{path}` ({status}) +{add} -{delete}")
     lines.append("")
+
+    tool_schemas = result.get("tool_schemas", {})
+    if tool_schemas:
+        lines.append("# Available tools")
+        lines.append("")
+        for name, schema in tool_schemas.items():
+            desc = schema.get("description", "")
+            lines.append(f"## {name}")
+            if desc:
+                lines.append(desc)
+            lines.append("")
+            input_schema = schema.get("inputSchema", {})
+            props = input_schema.get("properties", {})
+            required = set(input_schema.get("required", []))
+            if props:
+                lines.append("Parameters:")
+                for pname, pdef in props.items():
+                    ptype = _schema_type_label(pdef)
+                    pdesc = _schema_description(pdef)
+                    req = " (required)" if pname in required else ""
+                    default = f", default={pdef['default']}" if "default" in pdef else ""
+                    lines.append(f"- `{pname}` ({ptype}{default}){req}: {pdesc}")
+            else:
+                lines.append("Parameters: none")
+            lines.append("")
 
     next_steps = result.get("next", "")
     if next_steps:
@@ -1403,7 +1459,7 @@ def create_mcp_server(structured_output: bool = False):
         readOnlyHint=True,
         openWorldHint=True
     ))
-    def auto_commit():
+    async def auto_commit():
         """Start a guided session to organize and commit all unstaged changes with appropriate granularity.
 
         This tool helps you organize your changes and create multiple focused commits by:
@@ -1472,6 +1528,16 @@ def create_mcp_server(structured_output: bool = False):
                 total_additions += stats["additions"]
                 total_deletions += stats["deletions"]
 
+        # Build tool schemas from registered tool definitions
+        tool_schemas = {}
+        for tool_name in ["list_changes", "diff", "apply_changes"]:
+            tool = await mcp.get_tool(tool_name)
+            if tool:
+                tool_schemas[tool_name] = {
+                    "description": tool.description,
+                    "inputSchema": tool.parameters,
+                }
+
         # Create instruction for the agent
         instruction = {
             "recent_commits": recent_commits,
@@ -1482,6 +1548,7 @@ def create_mcp_server(structured_output: bool = False):
                 "total_changes": total_additions + total_deletions
             },
             "files": file_stats,
+            "tool_schemas": tool_schemas,
             "next": (
                 "Now follow these steps to create focused commits:\n\n"
                 "1. **Review file statistics**: Above you see all changed files with line counts "

@@ -30,7 +30,10 @@ def run(cmd: list[str], cwd: str | None = None, check: bool = True, text: bool =
     env = os.environ.copy()
     env.setdefault("LC_ALL", "C")
     env.setdefault("LANG", "C")
-    p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=text, input=input_text)
+    # stdin=DEVNULL is required: when running as a stdio MCP server on Windows,
+    # git inherits the parent's stdin pipe and blocks forever at startup.
+    stdin = subprocess.DEVNULL if input_text is None else None
+    p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=text, input=input_text, stdin=stdin, env=env)
     if check and p.returncode != 0:
         raise subprocess.CalledProcessError(p.returncode, cmd, p.stdout, p.stderr)
     return p.stdout
@@ -1233,7 +1236,8 @@ def do_unstack(branches: dict[str, list[str]], parent: str = "origin/main") -> d
                         ["git", "commit-tree", tree_sha, "-p", current_parent, "-m", commit_message],
                         capture_output=True,
                         text=True,
-                        env=env
+                        env=env,
+                        stdin=subprocess.DEVNULL
                     )
                     if p.returncode != 0:
                         raise subprocess.CalledProcessError(p.returncode, p.args, p.stdout, p.stderr)
